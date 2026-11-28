@@ -815,7 +815,13 @@ public class MainActivity extends Activity {
                     updateCallback("downloading", progressSnapshot());
                 }
             } catch (Exception e) {
-                updateError("更新下载记录无效，请重新检查更新");
+                // Installs can inherit stale updater state from an earlier build.
+                // A missing or invalid task is not a user-facing update failure:
+                // clear it and check the trusted latest release instead.
+                UpdateClient.prefs(MainActivity.this).edit()
+                        .remove(UpdateClient.DOWNLOAD_RELEASE_KEY)
+                        .remove(UpdateClient.READY_VERSION_KEY).apply();
+                checkUpdate();
             }
         }
 
