@@ -59,7 +59,7 @@ Android 需要 JDK 17 或 21、Android SDK 35 和 Gradle 8.9。在配置 SDK 后
 
 iOS 需要 macOS、Xcode 16 或更新版本；打开 `ios/PpApiMobile.xcodeproj`，或手动运行 `Build iOS package` 工作流。工作流生成未签名 IPA，并构建和启动模拟器。签名分发需要相应 Apple 开发者配置。
 
-发布时递增 Android `versionCode`、`versionName` 与 iOS `CURRENT_PROJECT_VERSION`、`MARKETING_VERSION`，运行测试并检查签名。若自行创建 Release，请同步资产名 `BearLab-AI-release.apk` 与 `BearLab-AI-iOS-unsigned.ipa`，并在分发前计算和公布 SHA-256。
+发布时递增 Android `versionCode`、`versionName` 与 iOS `CURRENT_PROJECT_VERSION`、`MARKETING_VERSION`，运行测试并检查签名。Android 工作流可由 `v*` 标签自动触发，也可在 Actions 中手动输入标签；它会运行测试、使用仓库 Secrets 签名、校验 APK 并创建含 SHA-256 的 GitHub Release。发布后可运行 `node tests/verify-release.mjs v1.1.0` 独立验证公网资产。若自行创建 Release，请同步资产名 `BearLab-AI-release.apk` 与 `BearLab-AI-iOS-unsigned.ipa`，并在分发前计算和公布 SHA-256。
 
 ## 数据与第三方组件
 
