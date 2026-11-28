@@ -46,7 +46,9 @@
   var THEME_KEYS = THEMES.map(function (item) { return item.key; });
 
   var ROUTES = {
-    '/home': { title: 'BearLab AI', tab: 'home', render: function () { return C.renderHome(); } },
+    '/home': { title: 'BearLab AI', tab: 'home', render: function () {
+      return global.S.user ? global.PagesDashboard.renderDashboard() : C.renderHome();
+    } },
     '/dashboard': { title: '仪表盘', tab: 'home', render: function () { return global.PagesDashboard.renderDashboard(); } },
     '/plaza': { title: '模型广场', tab: 'plaza', render: function () { return C.renderPlaza(); } },
     '/channel-status': { title: '渠道状态', tab: 'plaza', render: function () { return global.PagesChannel.render(); } },
@@ -447,7 +449,7 @@
       if (onAnnouncements) announcementBtn.setAttribute('aria-current', 'page');
       else announcementBtn.removeAttribute('aria-current');
     }
-    titleEl.textContent = r.path === '/home' && S.user ? 'BearLab 平台' : def.title;
+    titleEl.textContent = r.path === '/home' && S.user ? '仪表盘' : def.title;
     subEl.textContent = r.path === '/home' && !S.user ? 'AI API Gateway · 统一模型接入' : '';
     titleEl.appendChild(subEl);
 

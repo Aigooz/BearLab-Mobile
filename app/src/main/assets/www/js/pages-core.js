@@ -1398,6 +1398,9 @@
   global.PagesCore = {
     h: h, section: section, listItem: listItem, emptyState: emptyState, card: card,
     arrOf: arrOf, totalOf: totalOf, pick: pick, balanceOf: balanceOf,
+    homePlazaSummary: homePlazaSummary, availabilitySummary: availabilitySummary,
+    announcementTitle: announcementTitle, announcementDate: announcementDate,
+    announcementContent: announcementContent, plainAnnouncementText: plainAnnouncementText,
     plazaModels: plazaModels, modelRow: modelRow, platformKey: platformKey,
     modelTabs: modelTabs,
     renderHome: renderHome, renderPlaza: renderPlaza, renderAnnouncements: renderAnnouncements,

@@ -28,6 +28,28 @@
     if (n >= 1e6) return (n / 1e6).toFixed(4) + 'M';
     return U.tokens(n);
   }
+  function unwrapStats(value) {
+    value = value || {};
+    if (value.data && typeof value.data === 'object' && !Array.isArray(value.data)) value = value.data;
+    if (value.stats && typeof value.stats === 'object') value = value.stats;
+    return value;
+  }
+  function statCost(stats) {
+    var value = pick(stats || {}, 'total_actual_cost', 'actual_cost', 'cost');
+    if (value !== undefined && value !== null && value !== '' && isFinite(Number(value))) return Number(value);
+    return number((stats || {}).quota) / 500000;
+  }
+  function optionalToken(loaded, value) {
+    return loaded && value !== null && value !== undefined && isFinite(Number(value)) ? todayToken(value) : '—';
+  }
+  function dashboardTodayTokens(stats) {
+    var value = stats && stats.total_tokens;
+    if (value !== null && value !== undefined && value !== '' && isFinite(Number(value))) return Number(value);
+    return number(stats && stats.total_input_tokens) + number(stats && stats.total_output_tokens);
+  }
+  function compactPercent(value) {
+    return value === null || value === undefined || !isFinite(Number(value)) ? '—' : Number(value).toFixed(1) + '%';
+  }
   function svg(tag, attrs) {
     var node = document.createElementNS('http://www.w3.org/2000/svg', tag);
     Object.keys(attrs || {}).forEach(function (key) { node.setAttribute(key, attrs[key]); });
@@ -191,6 +213,9 @@
     var account = Api.AUTH.context();
     var page = h('div', { class: 'page dashboard' });
     var summaryHost = h('div', { class: 'dashboard-summary' }, h('div', { class: 'dashboard-loading' }, '正在加载账户统计…'));
+    var platformHost = h('div');
+    var modelPreviewHost = h('div');
+    var announcementHost = h('div');
     var trendHost = h('div');
     var modelHost = h('div');
     var recentHost = h('div');
@@ -205,7 +230,9 @@
     if (granularity !== 'hour') granularity = 'day';
     var rangeMode = U.store.get('dashboard_range_mode:' + encodeURIComponent(account.id), '7d');
     if (['today', '7d', '30d', 'custom'].indexOf(rangeMode) < 0) rangeMode = '7d';
-    var requestVersion = 0, summaryVersion = 0, lastSummary = null, appliedQuery = null, refreshedAt = Date.now(), refreshTimer = null;
+    var requestVersion = 0, summaryVersion = 0, platformVersion = 0, concurrencyVersion = 0, lastSummary = null;
+    var lastChannels = null, lastPlaza = global.S.plaza || null, lastConcurrency = null;
+    var appliedQuery = null, refreshedAt = Date.now(), refreshTimer = null;
     function current() { return Api.AUTH.matches(account) && App.isPageRetained(page); }
     var granularityControl = h('div', { class: 'seg dashboard-granularity', 'aria-label': '统计粒度' },
       ['day', 'hour'].map(function (value) {
@@ -268,6 +295,9 @@
       advanced);
 
     page.appendChild(summaryHost);
+    page.appendChild(platformHost);
+    page.appendChild(modelPreviewHost);
+    page.appendChild(announcementHost);
     page.appendChild(section('用量分析', null, null, dateControls));
     page.appendChild(h('div', { class: 'dashboard-charts' }, modelHost, trendHost));
     page.appendChild(recentHost);
@@ -276,7 +306,9 @@
       { icon: 'chart', label: '用量', path: '#/usage' },
       { icon: 'card', label: '充值', path: '#/purchase' },
       { icon: 'gift', label: '兑换', path: '#/redeem' },
-      { icon: 'bell', label: '公告', path: '#/announcements' }
+      { icon: 'bell', label: '公告', path: '#/announcements' },
+      { icon: 'grid', label: '模型广场', path: '#/plaza' },
+      { icon: 'activity', label: '渠道状态', path: '#/channel-status' }
     ].map(function (item) {
       return h('button', { class: 'quick', onclick: function () {
         App.go(item.path);
@@ -285,12 +317,29 @@
     }))));
 
     function renderSummary(stats) {
-      var requests = number(stats.total_requests);
-      var cost = number(stats.total_actual_cost);
-      var input = number(stats.total_input_tokens);
-      var output = number(stats.total_output_tokens);
-      var tokens = number(stats.total_tokens);
-      if (stats.total_tokens == null) tokens = input + output;
+      stats = stats || {};
+      var todayLoaded = stats._todayLoaded === true;
+      var today = stats._today || {};
+      var todayRequests = number(today.total_requests);
+      var todayInput = number(today.total_input_tokens);
+      var todayOutput = number(today.total_output_tokens);
+      var todayTokens = dashboardTodayTokens(today);
+      var todayCost = statCost(today);
+      var todayQuality = global.UsageAnalysis.values({
+        total_requests: today.total_requests,
+        total_errors: pick(today, 'total_errors', 'error_count', 'errors', 'failed_requests', 'failed_count'),
+        success_rate: pick(today, 'success_rate', 'request_success_rate'),
+        success_requests: pick(today, 'success_requests', 'successful_requests'),
+        status_known: pick(today, 'status_known')
+      });
+      var todaySuccess = todayLoaded ? todayQuality.successRate : null;
+      var todayErrors = todayLoaded ? todayQuality.errors : null;
+      var todayBreakdownKnown = todayLoaded && !(todayTokens > 0 && todayInput + todayOutput === 0);
+      var todayCacheBase = todayInput + number(today.total_cache_creation_tokens) + number(today.total_cache_read_tokens);
+      var todayCacheHit = todayCacheBase ? number(today.total_cache_read_tokens) / todayCacheBase * 100 : null;
+      var totalRequests = number(stats.total_requests);
+      var totalCost = statCost(stats);
+      var totalTokens = stats.total_tokens === null || stats.total_tokens === undefined ? null : number(stats.total_tokens);
       summaryHost.innerHTML = '';
       var balanceValue = balanceMoney(C.balanceOf(global.S.user || Api.AUTH.user() || {}));
       var balanceCard = h('button', {
@@ -299,26 +348,42 @@
       },
         h('span', { class: 'dashboard-metric-label' }, h('i', { html: U.ic('card', 16) }), '账户余额'),
         h('strong', { class: 'dashboard-balance-value' }, balanceValue));
-      summaryHost.appendChild(h('div', { class: 'dashboard-overview' },
-        h('section', { class: 'card dashboard-hero-card' },
-          h('div', { class: 'dashboard-hero-top' },
-            h('div', { class: 'dashboard-balance-wrap' },
-              h('div', { class: 'dashboard-overview-head' },
-                h('div', { class: 'dashboard-eyebrow' }, '账户概览'),
-                h('time', { class: 'dashboard-refresh-time', datetime: new Date(refreshedAt).toISOString() },
-                  '更新于 ' + new Date(refreshedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))),
-              balanceCard),
-            h('div', { class: 'dashboard-hero-secondary' },
-              metric('累计费用', money(cost), ['按实际用量结算'], 'card'),
-              metric('累计 Tokens', todayToken(tokens), ['输入 ' + todayToken(input), '输出 ' + todayToken(output)], 'bolt')))),
-        h('section', { class: 'card dashboard-quality' },
-          h('div', { class: 'dashboard-quality-head' },
-            h('div', null, h('strong', null, '用量概览'), h('span', null, '请求与模型消耗汇总')),
-            h('button', { class: 'dashboard-inline-action', onclick: function () { App.go('#/usage'); } }, '查看用量 ›')),
-          h('div', { class: 'dashboard-quality-grid' },
-            metric('累计请求', U.num(requests), '全部调用', 'chart'),
-            metric('累计 Tokens', token(tokens), '输入 ' + token(input) + ' · 输出 ' + token(output), 'bolt'),
-            metric('输入 / 输出', token(input) + ' / ' + token(output), 'Token 明细', 'sparkle')))));
+      var overviewHead = h('div', { class: 'dashboard-overview-head' },
+        h('div', { class: 'dashboard-eyebrow' }, '账户概览'),
+        h('div', { class: 'dashboard-refresh-time' }, '更新于 ',
+          h('time', { datetime: new Date(refreshedAt).toISOString() },
+            new Date(refreshedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))));
+      var liveQuality = h('div', { class: 'card dashboard-metric dashboard-quality-item dashboard-live-quality' },
+        h('div', { class: 'dashboard-metric-label' }, h('i', { class: 'dashboard-live-mark' }, h('b')), '实时性能'),
+        h('strong', null, U.num(today.rpm) + ' RPM'),
+        h('div', { class: 'dashboard-metric-detail' },
+          h('div', null, U.num(today.tpm) + ' TPM'),
+          h('div', { class: 'dashboard-live-concurrency' },
+            '当前并发 ' + (lastConcurrency === null ? '—' : U.num(lastConcurrency)) + ' 路'),
+          h('div', null, '累计 ' + (totalTokens === null ? '—' : token(totalTokens)))));
+      var qualityCard = h('section', { class: 'card dashboard-quality' },
+        h('div', { class: 'dashboard-quality-head' },
+          h('div', null, h('strong', null, '运行质量'), h('span', null, '请求、缓存与实时性能')),
+          h('button', { class: 'dashboard-inline-action', onclick: function () { App.go('#/usage'); } }, '查看用量 ›')),
+        h('div', { class: 'dashboard-quality-grid' },
+          metric('今日请求', todayLoaded ? U.num(todayRequests) : '—',
+            ['累计 ' + U.num(totalRequests), todayLoaded ? '今日记录' : '统计不可用'], 'chart'),
+          metric('今日成功率', compactPercent(todaySuccess),
+            [todayErrors != null ? '今日出错 ' + U.num(Math.min(todayErrors, todayRequests)) : '结果明细未提供',
+             '累计请求 ' + U.num(totalRequests)], 'shield'),
+          metric('今日缓存命中', compactPercent(todayCacheHit),
+            ['读 ' + optionalToken(todayCacheBase > 0, today.total_cache_read_tokens),
+             '写 ' + optionalToken(todayCacheBase > 0, today.total_cache_creation_tokens)], 'bolt'),
+          liveQuality));
+      var heroCard = h('section', { class: 'card dashboard-hero-card' },
+        h('div', { class: 'dashboard-hero-top' },
+          h('div', { class: 'dashboard-balance-wrap' }, overviewHead, balanceCard),
+          h('div', { class: 'dashboard-hero-secondary' },
+            metric('今日费用', money(todayCost), ['累计 ' + money(totalCost), '按实际用量结算'], 'card'),
+            metric('今日 Tokens', optionalToken(todayLoaded, todayTokens),
+              ['输入 ' + optionalToken(todayBreakdownKnown, todayInput),
+               '输出 ' + optionalToken(todayBreakdownKnown, todayOutput)], 'bolt'))));
+      summaryHost.appendChild(h('div', { class: 'dashboard-overview' }, heroCard, qualityCard));
       summaryHost.appendChild(h('div', { class: 'dashboard-overview-actions' },
         h('button', { class: 'btn', onclick: function () { App.go('#/keys'); } }, h('span', { html: U.ic('key', 16) }), '管理令牌'),
         h('button', { class: 'btn', onclick: function () { App.go('#/usage'); } }, h('span', { html: U.ic('chart', 16) }), '用量明细'),
@@ -335,17 +400,192 @@
       host.appendChild(h('div', { class: 'dashboard-error' }, title, ' ', h('button', { onclick: retry }, '重试')));
     }
 
+    function loadConcurrency() {
+      var version = ++concurrencyVersion;
+      return Api.keys(1, 100).then(function (result) {
+        if (!current() || version !== concurrencyVersion) return;
+        var items = arrOf(result);
+        var sum = 0, known = 0;
+        global.S.keys = items;
+        items.forEach(function (key) {
+          var value = pick(key, 'current_concurrency');
+          if (value === undefined || value === null || value === '' || !isFinite(Number(value)) || Number(value) < 0) return;
+          sum += Number(value);
+          known++;
+        });
+        lastConcurrency = items.length && known === items.length ? sum : null;
+        if (lastSummary) renderSummary(lastSummary);
+      }).catch(function () {
+        if (!current() || version !== concurrencyVersion) return;
+        lastConcurrency = null;
+        if (lastSummary) renderSummary(lastSummary);
+      });
+    }
+
     function loadSummary(silent) {
       var version = ++summaryVersion;
       if (silent !== true || !lastSummary) loading(summaryHost);
-      return Api.usageStats({ period: 'all' }).then(function (stats) {
+      var totalRequest = Api.usageStats({ period: 'all' });
+      var todayRequest = Api.usageStats({ period: 'today' });
+      return Promise.all([
+        totalRequest.catch(function () { return {}; }),
+        todayRequest.catch(function () { return null; })
+      ]).then(function (values) {
         if (!current() || version !== summaryVersion) return;
-        stats = stats || {};
-        if (stats.data && typeof stats.data === 'object') stats = stats.data;
-        if (stats.stats && typeof stats.stats === 'object') stats = stats.stats;
+        if (values[1] === null && !lastSummary) {
+          showError(summaryHost, '账户统计加载失败', loadSummary);
+          return;
+        }
+        var total = unwrapStats(values[0]);
+        var today = values[1] === null ? unwrapStats(lastSummary && lastSummary._today) : unwrapStats(values[1]);
+        var hasTotal = !!(values[0] && Object.keys(total).length);
+        var stats = Object.assign({}, hasTotal || !lastSummary ? total : lastSummary, {
+          _today: today,
+          _todayLoaded: values[1] !== null || !!(lastSummary && lastSummary._todayLoaded)
+        });
+        if (number(stats.total_requests) > 0 && number(stats.total_tokens) === 0) stats.total_tokens = null;
         lastSummary = stats;
         renderSummary(stats);
-      }).catch(function () { if (current() && version === summaryVersion && (silent !== true || !lastSummary)) showError(summaryHost, '账户统计加载失败', loadSummary); });
+        if (platformHost.childNodes.length) renderPlatforms();
+        loadConcurrency();
+      }).catch(function () {
+        if (current() && version === summaryVersion && (silent !== true || !lastSummary)) {
+          showError(summaryHost, '账户统计加载失败', loadSummary);
+        }
+      });
+    }
+
+    function featureHead(icon, label) {
+      return h('div', { class: 'home-platform-feature-head' },
+        h('span', { class: 'home-platform-icon', html: U.ic(icon, 17) }),
+        h('span', { class: 'home-platform-name' }, label),
+        h('span', { class: 'home-platform-arrow', html: U.ic('chevron', 15) })
+      );
+    }
+
+    function renderPlatforms() {
+      var plaza = lastPlaza || global.S.plaza || {};
+      var plazaStats = C.homePlazaSummary(plaza);
+      var availability = C.availabilitySummary(lastChannels && lastChannels.items);
+      var todayLoaded = !!(lastSummary && lastSummary._todayLoaded);
+      var today = lastSummary && lastSummary._today || {};
+      var usageValues = [
+        ['今日费用', todayLoaded ? money(statCost(today)) : '—'],
+        ['今日请求', todayLoaded ? U.num(number(today.total_requests)) : '—'],
+        ['今日 Tokens', optionalToken(todayLoaded, dashboardTodayTokens(today))]
+      ];
+      var usageFeature = h('button', {
+        class: 'home-platform-feature home-platform-usage dashboard-platform-feature',
+        type: 'button', 'aria-label': '查看平台用量',
+        onclick: function () { App.go('#/usage'); }
+      },
+        featureHead('chart', '平台用量'),
+        h('div', { class: 'home-platform-usage-metrics' }, usageValues.map(function (item) {
+          return h('div', { class: 'home-platform-usage-metric' },
+            h('b', null, item[1]), h('span', null, item[0]));
+        })),
+        h('span', { class: 'home-platform-feature-meta' }, '账户今日实时用量'));
+      var plazaFeature = h('button', {
+        class: 'home-platform-feature dashboard-platform-feature',
+        type: 'button', 'aria-label': '进入模型广场',
+        onclick: function () { App.go('#/plaza'); }
+      },
+        featureHead('grid', '模型广场'),
+        h('strong', { class: 'home-platform-feature-value' },
+          plazaStats.models ? U.num(plazaStats.models) + ' 个模型' : (global.S.plazaLoading ? '同步中' : '等待数据')),
+        h('span', { class: 'home-platform-feature-meta' },
+          plazaStats.models ? plazaStats.groups + ' 个分组' +
+            (plazaStats.vendors ? ' · ' + plazaStats.vendors + ' 个厂商' : '') : '查看分组、定价与上下文'));
+      var channelValue = availability.failed ? availability.failed + ' 个异常'
+        : availability.warning ? availability.warning + ' 个波动'
+        : availability.total ? '运行正常' : '等待数据';
+      var channelMeta = availability.total
+        ? '平均可用率 ' + compactPercent(availability.average) + ' · ' + availability.total + ' 条线路'
+        : '公开可用率暂未返回';
+      var channelFeature = h('button', {
+        class: 'home-platform-feature dashboard-platform-feature',
+        type: 'button', 'aria-label': '查看渠道状态',
+        onclick: function () { App.go('#/channel-status'); }
+      },
+        featureHead('activity', '渠道状态'),
+        h('strong', { class: 'home-platform-feature-value' }, channelValue),
+        h('span', { class: 'home-platform-feature-meta' }, channelMeta));
+      platformHost.innerHTML = '';
+      platformHost.appendChild(h('section', { class: 'section home-platform-section dashboard-platform-section' },
+        h('div', { class: 'home-platform-head' },
+          h('div', null,
+            h('span', { class: 'home-platform-eyebrow' }, 'BEARLAB PULSE'),
+            h('h2', null, '平台用量')),
+          h('span', { class: 'home-platform-live' }, h('i', null), 'LIVE')),
+        h('div', { class: 'home-platform-grid dashboard-platforms' },
+          usageFeature, plazaFeature, channelFeature)));
+    }
+
+    function renderModelPreview() {
+      var models = C.plazaModels(lastPlaza || global.S.plaza || {});
+      var byName = Object.create(null);
+      models.forEach(function (model) {
+        if (model && model.name && !byName[model.name]) byName[model.name] = model;
+      });
+      var preview = Object.keys(byName).map(function (name) { return byName[name]; }).slice(0, 4);
+      modelPreviewHost.innerHTML = '';
+      if (!preview.length) {
+        modelPreviewHost.appendChild(section('模型速览', null, null,
+          h('div', { class: 'dashboard-empty' }, global.S.plazaLoading ? '正在同步模型目录…' : '模型目录暂未返回')));
+        return;
+      }
+      modelPreviewHost.appendChild(section('模型速览', '全部模型', function () { App.go('#/plaza'); },
+        card(preview.map(function (model) { return C.modelRow(model); }))));
+    }
+
+    function loadPlatforms(silent) {
+      var version = ++platformVersion;
+      if (silent !== true) loading(platformHost);
+      return Promise.all([
+        Api.plaza().catch(function () { return lastPlaza || global.S.plaza || null; }),
+        Api.channelStatus().catch(function () { return null; })
+      ]).then(function (values) {
+        if (!current() || version !== platformVersion) return;
+        lastPlaza = values[0] || lastPlaza;
+        lastChannels = values[1] || lastChannels;
+        renderPlatforms();
+        renderModelPreview();
+      }).catch(function () {
+        if (!current() || version !== platformVersion) return;
+        renderPlatforms();
+        renderModelPreview();
+      });
+    }
+
+    function loadAnnouncements() {
+      return Api.announcements().then(function (list) {
+        if (!current()) return;
+        var items = arrOf(list).slice(0, 2);
+        announcementHost.innerHTML = '';
+        if (!items.length) {
+          announcementHost.appendChild(section('Bear 公告', null, null,
+            h('div', { class: 'dashboard-empty' }, '暂无公告')));
+          return;
+        }
+        announcementHost.appendChild(section('Bear 公告', '全部公告', function () { App.go('#/announcements'); },
+          card(items.map(function (item) {
+            var date = C.announcementDate(item);
+            return h('div', {
+              class: 'dashboard-announcement',
+              onclick: function () { App.go('#/announcements/' + (item.id || 0)); }
+            },
+              h('span', { class: 'dashboard-announcement-icon', html: U.ic('bell', 17) }),
+              h('div', { class: 'dashboard-announcement-body' },
+                h('strong', null, C.announcementTitle(item)),
+                h('span', null, C.plainAnnouncementText(C.announcementContent(item)).slice(0, 120)),
+                h('time', null, U.ago(date) || U.date(date))));
+          }))));
+      }).catch(function () {
+        if (!current()) return;
+        announcementHost.innerHTML = '';
+        announcementHost.appendChild(section('Bear 公告', null, null,
+          h('div', { class: 'dashboard-empty' }, '公告暂时无法加载')));
+      });
     }
 
     function query() {
@@ -479,10 +719,11 @@
       )));
     }
 
-    function renderRecent(data) {
+    function renderRecent(data, loadingState) {
       var records = arrOf(data).slice(0, 5);
       recentHost.innerHTML = '';
-      recentHost.appendChild(section('最近调用', '全部记录', function () { App.go('#/usage'); }, records.length
+      recentHost.appendChild(section('最近调用', '全部记录', function () { App.go('#/usage'); }, loadingState
+        ? h('div', { class: 'dashboard-empty' }, '正在加载最近调用…') : records.length
         ? h('div', { class: 'dashboard-recent' }, records.map(function (item) {
             var tok = global.UsageAnalysis.tokenBreakdown(item);
             var lat = global.UsageAnalysis.latency(item);
@@ -514,7 +755,7 @@
         end_timestamp: Math.floor(range.endExclusive.getTime() / 1000)
       });
       var selectedGranularity = appliedQuery.granularity;
-      if (silent !== true) { loading(trendHost); loading(modelHost); loading(recentHost); }
+      if (silent !== true) { loading(trendHost); loading(modelHost); renderRecent([], true); }
       if (!range.wholeDays) {
         fetchUsageRecords(range, current).then(function (records) {
           if (!current() || version !== requestVersion) return;
@@ -567,6 +808,7 @@
       refreshedAt = Date.now();
       loadSummary(true);
       refreshCharts();
+      loadPlatforms(true);
       refreshTimer = setTimeout(refreshVisible, 5000);
     }
     function scheduleRefresh() {
@@ -587,21 +829,52 @@
       refreshedAt = Date.now();
       loadSummary(true);
       refreshCharts();
+      loadPlatforms(true);
+      loadAnnouncements();
+    }
+    function liveUpdated(event) {
+      if (!current() || !event.detail || !event.detail.changed) return;
+      var changed = event.detail.changed;
+      if (changed.plaza) lastPlaza = changed.plaza;
+      if (changed.channel) lastChannels = changed.channel;
+      if (changed.plaza || changed.channel) {
+        renderPlatforms();
+        renderModelPreview();
+      }
+      if (changed.usage || changed.plaza || changed.channel) loadSummary(true);
+    }
+    function plazaUpdated(event) {
+      if (!current() || !event.detail || !event.detail.plaza) return;
+      lastPlaza = event.detail.plaza;
+      renderPlatforms();
+      renderModelPreview();
     }
     global.addEventListener('pp:user-updated', userUpdated);
-    page.addEventListener('pp:page-activate', scheduleRefresh);
+    global.addEventListener('pp:live-refreshed', liveUpdated);
+    global.addEventListener('pp:plaza-updated', plazaUpdated);
+    page.addEventListener('pp:page-activate', function () {
+      scheduleRefresh();
+      loadPlatforms(true);
+    });
     page.addEventListener('pp:page-deactivate', function () { clearTimeout(refreshTimer); });
     page.addEventListener('pp:page-refresh', function () {
       refreshedAt = Date.now();
       loadSummary(true);
       refreshCharts();
+      loadPlatforms(true);
+      loadAnnouncements();
       scheduleRefresh();
     });
     page.addEventListener('pp:page-dispose', function () {
       clearTimeout(refreshTimer);
       global.removeEventListener('pp:user-updated', userUpdated);
+      global.removeEventListener('pp:live-refreshed', liveUpdated);
+      global.removeEventListener('pp:plaza-updated', plazaUpdated);
     });
+    renderPlatforms();
     loadSummary();
+    loadPlatforms();
+    loadAnnouncements();
     loadCharts();
     return page;
   }

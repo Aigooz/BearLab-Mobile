@@ -82,40 +82,60 @@ try {
     await page.getByPlaceholder('输入密码').fill('layout-fixture-password');
     await page.getByRole('button', { name: '登录', exact: true }).click();
     await page.getByText('账户余额').waitFor();
-    await page.locator('.home-platform-feature').nth(2).waitFor();
-    await page.getByText('平台用量', { exact: true }).waitFor();
-    await page.getByText('模型广场', { exact: true }).waitFor();
-    await page.getByText('渠道状态', { exact: true }).waitFor();
-    assert.equal(await page.locator('.home-platform-feature').count(), 3);
-    await page.waitForFunction(() => {
-      const values = Array.from(
-        document.querySelectorAll('.home-platform-usage-metric b'),
-        node => node.textContent.trim()
-      );
-      return values.join('|') === '¥2.00|1,690|5.80M';
-    });
+    await page.getByText('结果明细未提供', { exact: true }).waitFor();
+    const qualityCard = page.locator('.dashboard-quality');
+    assert.match(await qualityCard.innerText(), /今日成功率\s*—/);
+    assert.match(await qualityCard.innerText(), /今日缓存命中\s*—/);
+    await page.locator('.dashboard-overview').waitFor();
+    await page.locator('.dashboard-quality-grid').waitFor();
+    await page.locator('.dashboard-platforms').waitFor();
+    await page.getByRole('heading', { name: '平台用量' }).waitFor();
+    await page.getByRole('button', { name: '进入模型广场' }).waitFor();
+    await page.getByRole('button', { name: '查看渠道状态' }).waitFor();
+    await page.getByText('模型速览', { exact: true }).waitFor();
+    await page.getByText('Bear 公告', { exact: true }).waitFor();
+    assert.equal(await page.locator('.dashboard-platform-feature').count(), 3);
+    const platformValues = await page.evaluate(() => Array.from(
+      document.querySelectorAll('.home-platform-usage-metric b'),
+      node => node.textContent.trim()
+    ));
+    assert.deepEqual(platformValues, ['¥2.00', '1,690', '5.8025M']);
     assert.match(await page.locator('.home-platform-usage').innerText(), /今日 Tokens/);
     const home = await inspect(page, `${viewport.width}-home`);
-    assert.match(home.text, /平台总览/);
+    assert.match(home.text, /账户概览/);
+    assert.match(home.text, /运行质量/);
+    assert.match(home.text, /今日费用/);
+    assert.match(home.text, /今日 Tokens/);
+    assert.match(await page.locator('.appbar-title').innerText(), /仪表盘/);
     const platformInViewport = await page.evaluate(() => {
-      const cards = Array.from(document.querySelectorAll('.home-platform-feature'));
       const visibleBottom = Math.min(
         window.innerHeight,
         document.querySelector('.tabbar').getBoundingClientRect().top
       );
-      return cards.length === 3 && cards.every(card => card.getBoundingClientRect().bottom < visibleBottom);
+      const section = document.querySelector('.dashboard-platform-section');
+      return section && section.getBoundingClientRect().top < visibleBottom;
     });
-    assert.equal(platformInViewport, true, `${viewport.width}: platform features should fit above the tab bar`);
+    assert.equal(platformInViewport, true, `${viewport.width}: platform section should begin above the tab bar`);
+    await page.evaluate(() => { document.querySelector('main').scrollTop = 560; });
+    const homeFeatures = await inspect(page, `${viewport.width}-home-features`);
+    assert.match(homeFeatures.text, /平台用量|模型速览|Bear 公告/);
+    await page.evaluate(() => { const main = document.querySelector('main'); main.scrollTop = main.scrollHeight; });
+    await page.getByText('快捷操作', { exact: true }).waitFor();
+    await page.locator('.dashboard-recent-row').first().waitFor();
+    const homeBottom = await inspect(page, `${viewport.width}-home-bottom`);
+    assert.match(homeBottom.text, /最近调用/);
+    assert.match(homeBottom.text, /快捷操作/);
+    await page.evaluate(() => { document.querySelector('main').scrollTop = 0; });
 
     await page.getByRole('button', { name: '查看平台用量' }).click();
-    await page.getByText('用量分析').waitFor();
-    assert.match(await page.locator('.appbar-title').innerText(), /仪表盘/);
+    await page.locator('.usage-summary').waitFor();
+    assert.match(await page.locator('.appbar-title').innerText(), /用量明细/);
     await page.evaluate(() => App.go('#/home', true));
-    await page.getByText('平台总览').waitFor();
+    await page.getByText('账户概览').waitFor();
     await page.getByRole('button', { name: '进入模型广场' }).click();
     await page.locator('.plaza-group').first().waitFor();
     await page.evaluate(() => App.go('#/home', true));
-    await page.getByText('平台总览').waitFor();
+    await page.getByText('账户概览').waitFor();
     await page.getByRole('button', { name: '查看渠道状态' }).click();
     await page.locator('.channel-item').first().waitFor();
 
