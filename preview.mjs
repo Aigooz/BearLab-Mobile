@@ -1,0 +1,116 @@
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Readable } from 'node:stream';
+
+const root = path.join(path.dirname(fileURLToPath(import.meta.url)), 'app', 'src', 'main', 'assets', 'www');
+const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.jpg': 'image/jpeg', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2' };
+const upstream = 'https://bearlab.ai';
+const forwardHeaders = ['accept', 'accept-language', 'authorization', 'content-type', 'cookie', 'x-user-ui-request', 'x-auth-session'];
+// Ports 6665-6669 are browser-blocked (ERR_UNSAFE_PORT). Tests previously requested
+// port 0, so CI could intermittently receive one of them and fail before the app loaded.
+export const UNSAFE_PREVIEW_PORTS = new Set([1723, 6665, 6666, 6667, 6668, 6669]);
+
+export function listenPreview(server, preferredPort = 0, host = '127.0.0.1') {
+  return new Promise((resolve, reject) => {
+    function attempt(port, remaining) {
+      const onError = error => {
+        server.off('listening', onListening);
+        if (error.code === 'EADDRINUSE' && preferredPort === 0 && remaining > 0) {
+          attempt(0, remaining - 1);
+          return;
+        }
+        reject(error);
+      };
+      const onListening = () => {
+        server.off('error', onError);
+        const address = server.address();
+        if (preferredPort === 0 && UNSAFE_PREVIEW_PORTS.has(address.port)) {
+          server.close(() => attempt(0, remaining - 1));
+          return;
+        }
+        resolve(address);
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(port, host);
+    }
+    attempt(preferredPort, 8);
+  });
+}
+
+export function createPreviewServer() {
+  return http.createServer(async (req, res) => {
+    const host = req.headers.host;
+    if (!/^127\.0\.0\.1:\d+$/.test(host || '')) {
+      res.writeHead(403).end('Forbidden');
+      return;
+    }
+    let url;
+    try { url = new URL(req.url, `http://${host}`); } catch { res.writeHead(400).end(); return; }
+    if (url.pathname.startsWith('/__proxy/')) {
+      const match = url.pathname.match(/^\/__proxy\/bearlab(\/.*)$/);
+      const targetPath = match && match[1];
+      const allowed = match && (targetPath.startsWith('/api/') || targetPath.startsWith('/v1/'));
+      if (!allowed || req.headers['x-bearlab-preview'] !== '1' ||
+          !['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) ||
+          (req.headers.origin && req.headers.origin !== `http://${host}`) ||
+          (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin')) {
+        res.writeHead(403).end('Forbidden');
+        return;
+      }
+      const headers = {};
+      for (const name of forwardHeaders) if (req.headers[name]) headers[name] = req.headers[name];
+      const upstreamUrl = new URL(targetPath + url.search, upstream);
+      if (!(upstreamUrl.pathname.startsWith('/api/') || upstreamUrl.pathname.startsWith('/v1/'))) {
+        res.writeHead(403).end('Forbidden');
+        return;
+      }
+      const options = { method: req.method, headers, redirect: 'manual' };
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        options.body = Readable.toWeb(req);
+        options.duplex = 'half';
+      }
+      try {
+        const response = await fetch(upstreamUrl, options);
+        const responseHeaders = {
+          'content-type': response.headers.get('content-type') || 'application/octet-stream',
+          'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff'
+        };
+        const cookies = response.headers.getSetCookie ? response.headers.getSetCookie() : [];
+        if (cookies.length) responseHeaders['set-cookie'] = cookies;
+        const location = response.headers.get('location');
+        if (location) responseHeaders.location = location;
+        res.writeHead(response.status, responseHeaders);
+        if (response.body) Readable.fromWeb(response.body).pipe(res);
+        else res.end();
+      } catch {
+        if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: '无法连接 BearLab API' }));
+      }
+      return;
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405).end(); return; }
+    let pathname;
+    try { pathname = decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname); }
+    catch { res.writeHead(400).end(); return; }
+    const filename = path.resolve(root, '.' + pathname);
+    if (!filename.startsWith(root + path.sep) || !types[path.extname(filename)]) {
+      res.writeHead(404).end();
+      return;
+    }
+    fs.stat(filename, (err, stat) => {
+      if (err || !stat.isFile()) { res.writeHead(404).end(); return; }
+      res.writeHead(200, { 'content-type': types[path.extname(filename)], 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+      if (req.method === 'HEAD') res.end();
+      else fs.createReadStream(filename).pipe(res);
+    });
+  });
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const port = Number(process.env.PP_PREVIEW_PORT || 8798);
+  createPreviewServer().listen(port, '127.0.0.1', () => console.log(`BearLab AI preview: http://127.0.0.1:${port}/`));
+}

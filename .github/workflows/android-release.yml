@@ -1,0 +1,108 @@
+name: Android release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, for example v1.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+          cache-disabled: true
+      - name: Validate release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version="${RELEASE_TAG#v}"
+          grep -Fq "versionName '$version'" app/build.gradle
+          if git rev-parse -q --verify "refs/tags/$RELEASE_TAG" >/dev/null; then
+            test "$(git rev-list -n1 "$RELEASE_TAG")" = "$(git rev-parse HEAD)"
+          else
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git tag -a "$RELEASE_TAG" -m "BearLab Mobile $version"
+            git push origin "$RELEASE_TAG"
+          fi
+      - name: Install dependencies
+        run: npm ci
+      - name: BearLab contract
+        run: node tests/bearlab-contract.mjs
+      - name: Android layout
+        env:
+          PP_TEST_SCREENSHOTS: ${{ runner.temp }}/bearlab-layout
+        run: node tests/bearlab-mobile-layout.mjs
+      - name: Update frontend
+        run: node tests/updates.mjs
+      - name: Update rules
+        run: |
+          rm -rf update-rules
+          mkdir -p update-rules
+          javac -d update-rules app/src/main/java/com/ppapi/mobile/UpdateRules.java tests/UpdateRulesTest.java
+          java -cp update-rules com.ppapi.mobile.UpdateRulesTest
+      - name: Build signed APK
+        env:
+          BEARLAB_KEYSTORE_FILE: ${{ runner.temp }}/bearlab-release.jks
+          BEARLAB_KEYSTORE_PASSWORD: ${{ secrets.BEARLAB_KEYSTORE_PASSWORD }}
+          BEARLAB_KEY_ALIAS: ${{ secrets.BEARLAB_KEY_ALIAS }}
+          BEARLAB_KEY_PASSWORD: ${{ secrets.BEARLAB_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          printf '%s' '${{ secrets.BEARLAB_KEYSTORE_BASE64 }}' | base64 -d > "$BEARLAB_KEYSTORE_FILE"
+          chmod 600 "$BEARLAB_KEYSTORE_FILE"
+          gradle --no-daemon --stacktrace :app:assembleRelease
+          test -f app/build/outputs/apk/release/BearLab-AI-release.apk
+          build_tools="$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          "$build_tools/apksigner" verify --verbose --print-certs app/build/outputs/apk/release/BearLab-AI-release.apk
+          "$build_tools/aapt" dump badging app/build/outputs/apk/release/BearLab-AI-release.apk | grep -F "package: name='com.ppapi.mobile' versionCode='11000100' versionName='1.1.0'"
+          sha256sum app/build/outputs/apk/release/BearLab-AI-release.apk | tee BearLab-AI-release.apk.sha256
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/release-notes.md"
+          cat > "$notes" <<EOF
+          BearLab AI Mobile $RELEASE_TAG
+
+          - BearLab platform usage, model plaza and channel availability
+          - Android in-app download and system installer updates via GitHub Releases
+          - SHA-256 is attached to this release and verified by the app
+          EOF
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            app/build/outputs/apk/release/BearLab-AI-release.apk \
+            BearLab-AI-release.apk.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "BearLab AI Mobile $RELEASE_TAG" \
+            --notes-file "$notes" \
+            --latest

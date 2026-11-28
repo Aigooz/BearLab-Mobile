@@ -1,0 +1,53 @@
+plugins {
+    id 'com.android.application'
+}
+
+def releaseStoreFile = providers.environmentVariable('BEARLAB_KEYSTORE_FILE').orNull
+def releaseStorePassword = providers.environmentVariable('BEARLAB_KEYSTORE_PASSWORD').orNull
+def releaseKeyAlias = providers.environmentVariable('BEARLAB_KEY_ALIAS').orNull
+def releaseKeyPassword = providers.environmentVariable('BEARLAB_KEY_PASSWORD').orNull
+
+android {
+    namespace 'com.ppapi.mobile'
+    compileSdk 35
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    defaultConfig {
+        applicationId 'com.ppapi.mobile'
+        minSdk 23
+        targetSdk 34
+        // Encoded semantic version keeps 1.1.0 installable over the previous
+        // 1.38.0 test build while remaining higher than every 1.x release.
+        versionCode 11000100
+        versionName '1.1.0'
+    }
+
+    signingConfigs {
+        if (releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword) {
+            release {
+                storeFile file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // Local debug builds remain install-compatible. CI injects the
+            // matching protected keystore through environment variables.
+            signingConfig releaseStoreFile ? signingConfigs.release : signingConfigs.debug
+            minifyEnabled false
+        }
+    }
+
+    applicationVariants.all { variant ->
+        variant.outputs.all {
+            outputFileName = "BearLab-AI-${variant.buildType.name}.apk"
+        }
+    }
+}

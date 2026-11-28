@@ -1,0 +1,394 @@
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright';
+import { createPreviewServer, listenPreview } from '../preview.mjs';
+
+const server = createPreviewServer();
+await listenPreview(server);
+const base = `http://127.0.0.1:${server.address().port}`;
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+const errors = [];
+page.on('pageerror', error => errors.push(error.message));
+const ok = data => ({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 0, data }) });
+const trendQueries = [];
+const modelQueries = [];
+let manyPoints = false;
+let zeroModels = false;
+let singlePoint = false;
+let failStatus = true;
+let statusRequests = 0;
+let noReliability = false;
+let emptyKeys = false;
+let largeTodayTokens = false;
+await page.route('**/__proxy/**', async route => {
+  const p = new URL(route.request().url()).pathname.replace('/__proxy/site', '');
+  if (p === '/api/v1/settings/public') return route.fulfill(ok({ site_name: 'Pp API' }));
+  if (p === '/api/v1/model-plaza') return route.fulfill(ok({ description: '测试价格目录', groups: [
+    { id: 1, name: '测试分组', description: '主力模型', platform: 'openai', rate_multiplier: 0.1, models: [
+      { name: 'demo-model', platform: 'openai', context_length: 128000, pricing: { billing_mode: 'token', input_price: 0.000001, output_price: 0.000004, cache_read_price: 0.0000001 }, official_pricing: { input_price: 0.000001, output_price: 0.000004, cache_read_price: 0.0000001 } }
+    ] },
+    { id: 2, name: '图片分组', platform: 'image-platform', rate_multiplier: 0.5, image_rate_independent: true, image_rate_multiplier: 0.25, subscription_type: 'subscription', models: [
+      { name: 'demo-image', pricing: { billing_mode: 'image', per_request_price: 2 }, official_pricing: { per_request_price: 2 } }
+    ] }
+  ] }));
+  if (p === '/api/public/channel-status') {
+    statusRequests++;
+    if (failStatus) return route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+    const now = Date.now();
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ updatedAt: new Date(now).toISOString(), items: [
+      { model: 'demo-model', group: '测试分组', vendor: 'openai', vendorLabel: 'OpenAI', status: 'operational', latency: 1000, ping: 80, availability: 99.2,
+        timeline: [{ status: 'operational', latency_ms: 1000, ping_ms: 80, at: new Date(now - 1800000).toISOString() },
+          { status: 'degraded', latency_ms: 6000, ping_ms: 100, at: new Date(now).toISOString() }] },
+      { model: 'demo-image', group: '图片分组', vendor: 'image-platform', status: 'error', latency: 30000, ping: 20, availability: 90,
+        timeline: [{ status: 'error', latency_ms: 30000, ping_ms: 20, at: new Date(now).toISOString() }] },
+      { model: 'unknown-model', group: '测试分组', status: 'unknown', latency: null, ping: null, availability: null, timeline: [] }
+    ] }) });
+  }
+  if (p === '/api/v1/auth/login') return route.fulfill(ok({ access_token: 'fake-access', refresh_token: 'fake-refresh', user: { id: 1, email: 'test@example.test', balance: 3 } }));
+  if (p === '/api/v1/auth/me') return route.fulfill(ok({ id: 1, email: 'test@example.test', balance: 3 }));
+  if (p === '/api/v1/keys') return route.fulfill(ok({ items: emptyKeys ? [] : [
+    { id: 1, name: 'A', status: 'active', current_concurrency: 2 },
+    { id: 2, name: 'B', status: 'active', current_concurrency: 3 }
+  ] }));
+  if (p === '/api/v1/groups/available') return route.fulfill(ok([{ id: 1, name: '测试分组' }]));
+  if (p === '/api/v1/usage/stats') return route.fulfill(ok({ total_actual_cost: 0.5, total_requests: 2, total_input_tokens: 20, total_output_tokens: 30 }));
+  if (p === '/api/v1/usage/dashboard/stats') return route.fulfill(ok({
+    total_api_keys: 2, active_api_keys: 1, total_requests: 18, today_requests: 3,
+    today_cost: 0.8, today_actual_cost: 0.4, total_cost: 2, total_actual_cost: 1,
+    today_tokens: largeTodayTokens ? 1234567 : 50,
+    today_input_tokens: largeTodayTokens ? 1234567 : 20,
+    today_output_tokens: largeTodayTokens ? 1234567890 : 30,
+    total_tokens: 500, rpm: 2, tpm: 30, average_duration_ms: 1250,
+    ...(noReliability ? {} : { success_rate: 0.9, total_errors: 2, today_success_rate: 0.8, today_errors: 1 }),
+    total_cache_read_tokens: 40, today_cache_read_tokens: largeTodayTokens ? 0 : 10,
+    by_platform: [{ platform: 'openai', today_actual_cost: 0.4, total_actual_cost: 1, total_requests: 18, total_tokens: 500 }]
+  }));
+  if (p === '/api/v1/usage/dashboard/trend') {
+    trendQueries.push(new URL(route.request().url()).searchParams);
+    return route.fulfill(ok({ trend: manyPoints ? Array.from({ length: 80 }, (_, i) => ({ date: `point-${i}`, input_tokens: i + 1, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0 })) : singlePoint ? [
+      { date: 'only-point', input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0 }
+    ] : [
+      { date: '2026-01-01', input_tokens: 20, output_tokens: 30, cache_creation_tokens: 5, cache_read_tokens: 10, actual_cost: 0.4, cost: 0.8 },
+      { date: '2026-01-02', input_tokens: 40, output_tokens: 10, cache_creation_tokens: 10, cache_read_tokens: 50, actual_cost: 0.8, cost: 1.2 },
+      { date: '2026-01-03', input_tokens: 10, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 30 }
+    ] }));
+  }
+  if (p === '/api/v1/usage/dashboard/models') {
+    modelQueries.push(new URL(route.request().url()).searchParams);
+    return route.fulfill(ok({ models: zeroModels ? [{ model: 'zero-model', requests: 1, total_tokens: 0, actual_cost: 0, cost: 0 }] : [
+      { model: 'demo-model', actual_cost: 0.4, cost: 0.8, total_tokens: 60, requests: 3 },
+      { model: 'demo-model-2', actual_cost: 0.2, cost: 0.5, total_tokens: 40, requests: 2 }
+    ] }));
+  }
+  if (p === '/api/v1/user/platform-quotas') return route.fulfill(ok({ platform_quotas: [{ platform: 'openai', daily_limit_usd: 10, daily_usage_usd: 2 }] }));
+  if (p === '/api/v1/usage') return route.fulfill(ok({ items: [{ model: 'demo-model', created_at: '2026-01-01T10:00:00Z', input_tokens: 20, output_tokens: 30, actual_cost: 0.4, total_cost: 0.8 }] }));
+  if (p === '/api/v1/subscriptions/active' || p === '/api/v1/redeem/history') return route.fulfill(ok([]));
+  if (p === '/api/v1/announcements') return route.fulfill(ok([{
+    id: 7, title: '模型恢复完毕', created_at: '2026-11-18T10:00:00Z',
+    content: '<p style="font-size:15px;line-height:1.9;color:#e83e8c">各分组模型已<span style="font-weight:700">逐步恢复</span></p>' +
+      '<h3 style="border-left:3px solid #e83e8c;padding-left:10px">当前状态</h3>' +
+      '<p>补偿范围：<strong>11 月 17 日 12:00</strong></p>' +
+      '<script>window.badAnnouncementScript = true</script><img src="javascript:alert(1)" onerror="window.badAnnouncementImage=true">' +
+      '<a href="javascript:alert(1)">危险链接</a>'
+  }]));
+  return route.fulfill(ok({}));
+});
+try {
+  const denied = await fetch(base + '/__proxy/site/api/v1/settings/public');
+  assert.equal(denied.status, 403);
+  const wrapped = await fetch(base + '/__proxy/site/https://attacker.example/', { headers: { 'X-Pp-Preview': '1' } });
+  assert.equal(wrapped.status, 403);
+  const statusPost = await fetch(base + '/__proxy/site/api/public/channel-status', { method: 'POST', headers: { 'X-Pp-Preview': '1' } });
+  assert.equal(statusPost.status, 403);
+  await page.goto(base);
+  await page.getByText('demo-model').first().waitFor();
+  assert.equal(await page.locator('.tab').count(), 5);
+  await page.getByRole('button', { name: '模型', exact: true }).click();
+  await page.getByText('测试价格目录').waitFor();
+  assert.equal(await page.locator('.tab.active').getAttribute('data-tab'), 'plaza');
+  const plaza = page.locator('.plaza-page');
+  assert.equal(await plaza.locator('.plaza-group').count(), 2);
+  const firstGroup = plaza.locator('.plaza-group').first();
+  assert.doesNotMatch(await plaza.innerText(), /openai|image-platform|厂商/i,
+    'model vendors stay out of the model plaza interface');
+  assert.equal(await plaza.getByText('平台', { exact: true }).count(), 0);
+  assert.equal(await plaza.getByRole('button', { name: '名称', exact: true }).count(), 1);
+  assert.equal(await plaza.getByRole('button', { name: '综合', exact: true }).count(), 0);
+  assert.match(await plaza.locator('.plaza-overview-stats').innerText(), /分组[\s\S]*收藏[\s\S]*最低输入/);
+  assert.doesNotMatch(await plaza.locator('.plaza-overview-stats').innerText(), /厂商/);
+  assert.equal(await plaza.locator('.plaza-recent').count(), 0);
+  assert.equal(await plaza.getByText('最近使用', { exact: true }).count(), 0);
+  assert.equal(await plaza.getByText('快速继续', { exact: true }).count(), 0);
+  assert.equal(await plaza.locator('.plaza-cache-price').count(), 0,
+    'cache pricing belongs in the expanded pricing details');
+  assert.equal(await plaza.locator('.plaza-price-input').count(), 1);
+  assert.equal(await plaza.locator('.plaza-price-output').count(), 1);
+  const prices = await plaza.locator('.plaza-price-chip').evaluateAll(nodes => nodes.map(node => ({
+    text: node.textContent,
+    background: getComputedStyle(node).backgroundColor,
+    border: getComputedStyle(node).borderTopColor
+  })));
+  assert.ok(prices.every(item => item.background !== 'rgba(0, 0, 0, 0)' && item.border !== 'rgba(0, 0, 0, 0)'), JSON.stringify(prices));
+  await firstGroup.locator('.plaza-group-toggle').click();
+  assert.equal(await firstGroup.locator('.plaza-group-description').count(), 0,
+    'the group description shown in the header must not be repeated in the expanded body');
+  assert.doesNotMatch(await firstGroup.locator('.plaza-group-meta').innerText(), /openai/i);
+  assert.match(await firstGroup.locator('.plaza-model-context').first().innerText(), /128K 上下文/);
+  assert.doesNotMatch(await firstGroup.locator('.plaza-model-context').first().innerText(), /openai/i);
+  assert.doesNotMatch(await firstGroup.locator('.plaza-model-context').first().innerText(), /详情/);
+  await firstGroup.locator('.plaza-group-toggle').click();
+  assert.equal(await plaza.locator('.plaza-model-copy').count(), 2);
+  assert.equal(await plaza.locator('.plaza-model-copy svg').count(), 2);
+  assert.equal(await plaza.locator('.plaza-model-copy').first().textContent(), '');
+  await page.evaluate(() => { window.copiedModel = ''; window.Native = { copy: text => { window.copiedModel = text; } }; });
+  await plaza.getByRole('button', { name: '复制模型名称 demo-model' }).click();
+  assert.equal(await page.evaluate(() => window.copiedModel), 'demo-model');
+  assert.equal(await page.locator('.sheet').count(), 0);
+  await plaza.getByRole('button', { name: '价格明细' }).click();
+  assert.match(await plaza.innerText(), /\$0\.01/);
+  assert.match(await plaza.innerText(), /缓存读取/);
+  assert.equal(await plaza.locator('.plaza-model-details .plaza-cache-price').count(), 0);
+  assert.match(await plaza.innerText(), /订阅/);
+  await plaza.getByRole('button', { name: '筛选模型' }).click();
+  await page.locator('.plaza-filter-group').filter({ hasText: '倍率' }).getByRole('button', { name: '0.5x' }).click();
+  assert.equal(await plaza.locator('.plaza-group').count(), 1);
+  await page.locator('.plaza-filter-group').filter({ hasText: '倍率' }).getByRole('button', { name: '全部' }).click();
+  await page.getByRole('button', { name: '完成', exact: true }).click();
+  const imageGroup = plaza.locator('.plaza-group').filter({ hasText: '图片分组' });
+  await imageGroup.locator('.plaza-group-toggle').click();
+  assert.match(await imageGroup.innerText(), /demo-image/);
+  assert.equal(await imageGroup.locator('.plaza-model-context').count(), 0);
+  await imageGroup.locator('.plaza-group-toggle').click();
+  await plaza.getByRole('searchbox', { name: '搜索模型' }).fill('openai');
+  assert.equal(await plaza.locator('.plaza-group').count(), 0);
+  await plaza.getByRole('searchbox', { name: '搜索模型' }).fill('demo-model');
+  assert.equal(await plaza.locator('.plaza-group').count(), 1);
+  await plaza.getByRole('button', { name: 'demo-model', exact: true }).click();
+  assert.match(await page.locator('.sheet').innerText(), /官方价/);
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('button', { name: '我的', exact: true }).click();
+  await page.getByRole('button', { name: '去登录' }).click();
+  await page.locator('input[type=email]').fill('test@example.test');
+  await page.locator('input[type=password]').fill('password');
+  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await page.waitForFunction(() => !!window.Api.AUTH.isLogged());
+  await page.goto(base + '/#/announcements/7');
+  const announcement = page.locator('.announcement-body');
+  await announcement.getByText('逐步恢复', { exact: true }).waitFor();
+  assert.equal(await announcement.locator('span').first().evaluate(node => getComputedStyle(node).fontWeight), '700');
+  assert.equal(await announcement.locator('p').first().evaluate(node => getComputedStyle(node).fontSize), '15px');
+  assert.equal(await announcement.locator('script').count(), 0);
+  assert.equal(await announcement.locator('img').count(), 0);
+  assert.equal(await announcement.locator('a').count(), 0);
+  assert.equal(await page.evaluate(() => window.badAnnouncementScript || window.badAnnouncementImage || false), false);
+  await page.goto(base + '/#/plaza');
+  await page.locator('.plaza-group').first().waitFor();
+  await plaza.getByRole('button', { name: '渠道状态', exact: true }).click();
+  await page.getByText('渠道状态加载失败').waitFor();
+  failStatus = false;
+  await page.getByRole('button', { name: '重试' }).click();
+  await page.locator('.channel-item').first().waitFor();
+  const channelRoute = await page.evaluate(() => location.hash);
+  assert.ok(statusRequests >= 3);
+  assert.equal(await page.locator('.tab.active').getAttribute('data-tab'), 'plaza');
+  assert.equal(await page.locator('.channel-item').count(), 2);
+  assert.match(await page.locator('.channel-summary').innerText(), /1 个异常/);
+  assert.equal(await page.locator('.channel-summary .channel-metric').count(), 3);
+  await page.getByRole('button', { name: /测试分组 2/ }).click();
+  assert.equal(await page.locator('.channel-item').count(), 2);
+  await page.getByRole('searchbox', { name: '搜索渠道' }).fill('demo-model');
+  assert.equal(await page.locator('.channel-item').count(), 1);
+  assert.match(await page.locator('.channel-item').innerText(), /公开可用率\s+94\.7%/);
+  assert.equal(await page.getByText('模型可用率', { exact: true }).count(), 1);
+  for (const width of [320, 390, 768]) {
+    await page.setViewportSize({ width, height: 844 });
+    assert.equal(await page.evaluate(() => document.querySelector('#view').scrollWidth), await page.evaluate(() => document.querySelector('#view').clientWidth));
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  if (process.env.PP_TEST_SCREENSHOTS) await page.screenshot({ path: process.env.PP_TEST_SCREENSHOTS + '/pp-channel-390.png', animations: 'disabled' });
+  const requestsBeforeManualRefresh = statusRequests;
+  await page.getByRole('button', { name: '刷新渠道状态' }).click();
+  await page.waitForFunction(() => !document.querySelector('[aria-label="刷新渠道状态"]').disabled);
+  assert.ok(statusRequests > requestsBeforeManualRefresh);
+  await page.getByRole('button', { name: '模型广场' }).click();
+  await page.locator('.plaza-group').first().waitFor();
+  await page.getByRole('button', { name: '我的', exact: true }).click();
+  if (await page.getByRole('button', { name: '去登录' }).count()) {
+    await page.getByRole('button', { name: '去登录' }).click();
+  } else {
+    await page.goto(base + '/#/login');
+  }
+  await page.locator('input[type=email]').fill('test@example.test');
+  await page.locator('input[type=password]').fill('fake-password');
+  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await page.getByText('账户余额').waitFor();
+  await page.getByText('今日缓存命中率').waitFor();
+  assert.equal(await page.getByText('可用余额 · 点击充值', { exact: true }).count(), 0);
+  const refreshTimeBox = await page.locator('.dashboard-refresh-time').boundingBox();
+  const balanceBox = await page.locator('.dashboard-balance-block').boundingBox();
+  assert.ok(refreshTimeBox && balanceBox && refreshTimeBox.y < balanceBox.y,
+    'the update timestamp should sit at the top-right of the overview');
+  await page.getByText('用量趋势').waitFor();
+  const granularityButtons = page.locator('.dashboard-granularity-inline button');
+  const granularityLayout = await granularityButtons.evaluateAll(nodes => nodes.map(node => {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    return { lines: range.getClientRects().length, overflow: node.scrollWidth > node.clientWidth };
+  }));
+  assert.deepEqual(granularityLayout.map(item => item.lines), [1, 1]);
+  assert.deepEqual(granularityLayout.map(item => item.overflow), [false, false]);
+  assert.equal(await page.locator('.dashboard-metric').count(), 7);
+  assert.match(await page.locator('.dashboard-quality-head').innerText(), /运行质量\s+请求、缓存与实时性能/);
+  assert.doesNotMatch(await page.locator('.dashboard-quality-head').innerText(), /令牌状态/);
+  assert.match(await page.locator('.dashboard').innerText(), /80\.0%/);
+  assert.match(await page.locator('.dashboard').innerText(), /33\.3%/);
+  assert.match(await page.locator('.dashboard').innerText(), /今日出错 1/);
+  assert.match(await page.locator('.dashboard').innerText(), /当前并发 5 路/);
+  if (process.env.PP_TEST_SCREENSHOTS) {
+    await page.evaluate(() => {
+      document.querySelectorAll('.toast').forEach(node => node.remove());
+    });
+    await page.locator('.dashboard-overview').screenshot({
+      path: process.env.PP_TEST_SCREENSHOTS + '/pp-dashboard-overview-390.png', animations: 'disabled'
+    });
+  }
+  const metricDetails = page.locator('.dashboard-metric-detail');
+  assert.equal(await metricDetails.nth(0).locator(':scope > div').count(), 3);
+  assert.equal(await metricDetails.nth(1).locator(':scope > div').count(), 3);
+  assert.equal(await page.locator('.dashboard-quality-item .dashboard-metric-detail').nth(0).locator(':scope > div').count(), 3);
+  assert.equal(await page.locator('.dashboard-quality-item .dashboard-metric-detail').nth(1).locator(':scope > div').count(), 3);
+  largeTodayTokens = true;
+  noReliability = true;
+  await page.evaluate(async () => {
+    Api.clearCache();
+    const data = await Api.usageDashboard();
+    window.dispatchEvent(new CustomEvent('pp:live-refreshed', { detail: { value: data, reason: 'test' } }));
+  });
+  await page.waitForFunction(() => !document.querySelector('.dashboard-quality-grid').textContent.includes('今日成功率'));
+  assert.doesNotMatch(await page.locator('.dashboard-quality-grid').innerText(), /成功率|出错|未知/);
+  const todayTokens = page.locator('.dashboard-hero-secondary .dashboard-metric').filter({ hasText: '今日 Tokens' });
+  assert.match(await todayTokens.locator('strong').innerText(), /^1\.2346M$/);
+  assert.match(await todayTokens.innerText(), /输入 1\.2346M/);
+  assert.match(await todayTokens.innerText(), /输出 1\.2346B/);
+  assert.match(await todayTokens.innerText(), /缓存 0$/);
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    assert.equal(await page.locator('.dashboard-metric').count(), 6);
+    assert.equal(await page.evaluate(() => document.querySelector('#view').scrollWidth), await page.evaluate(() => document.querySelector('#view').clientWidth));
+    assert.equal(await page.locator('.dashboard-metric-detail').evaluateAll(elements => elements.every(el => el.scrollWidth <= el.clientWidth)), true);
+  }
+  await page.getByText('平台用量').waitFor();
+  await page.getByText('每日额度').waitFor();
+  await page.getByText('用量趋势').waitFor();
+  await page.getByText('模型分布').waitFor();
+  await page.getByText('最近调用').waitFor();
+  await page.getByRole('button', { name: '批量生图（官网）' }).waitFor();
+  assert.equal(await page.locator('.tab.active').getAttribute('data-tab'), 'home');
+  assert.match(await page.locator('.dashboard').innerText(), /1\.25 s/);
+  assert.match(await page.locator('.dashboard').innerText(), /累计实际/);
+  assert.equal(await page.locator('.dashboard-donut-segment').count(), 2);
+  assert.deepEqual(await page.locator('.dashboard-donut-segment').evaluateAll(nodes => nodes.map(n => Number(n.dataset.share))), [60, 40]);
+  const segment = await page.locator('.dashboard-donut-segment').first().getAttribute('stroke-dasharray');
+  assert.ok(Number(segment.split(' ')[0]) < 60, 'slices keep a hairline gap');
+  assert.equal(await page.locator('.dashboard-donut-legend-row').count(), 2);
+  assert.match(await page.locator('.dashboard-model-table').innerText(), /请求[\s\S]*Token[\s\S]*实际[\s\S]*标准/);
+  assert.match(await page.locator('.dashboard-model-table').innerText(), /demo-model-2/);
+  assert.equal(await page.locator('.dashboard-trend-line').count(), 5);
+  assert.equal(await page.locator('.dashboard-trend-point').count(), 3);
+  const chartGeometry = await page.locator('.dashboard-trend-svg').evaluate(el => ({
+    ratio: Math.abs(el.querySelector('.dashboard-chart-grid').getBoundingClientRect().width) / el.getBoundingClientRect().width,
+    chartWidth: el.getBoundingClientRect().width,
+    containerWidth: el.parentElement.clientWidth
+  }));
+  assert.ok(chartGeometry.ratio > 0.75, 'trend plot should use most of the chart width');
+  assert.equal(Math.round(chartGeometry.chartWidth), chartGeometry.containerWidth);
+  await page.getByRole('button', { name: '按小时' }).click();
+  await page.waitForFunction(() => document.querySelectorAll('.dashboard-trend-point').length === 3);
+  assert.equal(trendQueries.at(-1).get('granularity'), 'hour');
+  await page.getByRole('button', { name: '更多时间设置' }).click();
+  await page.getByLabel('开始日期', { exact: true }).fill('2026-01-01');
+  await page.getByLabel('结束日期', { exact: true }).fill('2026-01-03');
+  await page.getByRole('button', { name: '应用日期' }).click();
+  await page.waitForFunction(() => document.querySelectorAll('.dashboard-trend-point').length === 3);
+  assert.equal(modelQueries.at(-1).get('start_date'), '2026-01-01');
+  assert.equal(modelQueries.at(-1).get('end_date'), '2026-01-03');
+  await page.locator('.dashboard-trend-point').first().click();
+  assert.match(await page.locator('.dashboard-chart-detail').innerText(), /缓存命中率\s+28\.6%/);
+  await page.locator('.dashboard-trend-point').last().focus();
+  await page.locator('.dashboard-trend-point').last().press('Enter');
+  assert.match(await page.locator('.dashboard-chart-detail').innerText(), /缓存命中率\s+75\.0%/);
+  for (const width of [320, 390, 768]) {
+    await page.setViewportSize({ width, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+    assert.equal(await page.evaluate(() => document.querySelector('#view').scrollWidth), await page.evaluate(() => document.querySelector('#view').clientWidth));
+    assert.equal(await page.evaluate(() => document.querySelector('.dashboard-model-table-scroll').scrollWidth), await page.evaluate(() => document.querySelector('.dashboard-model-table-scroll').clientWidth));
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  if (process.env.PP_TEST_SCREENSHOTS) {
+    await page.waitForTimeout(3600);
+    await page.locator('.dashboard-models').scrollIntoViewIfNeeded();
+    await page.locator('.tabbar').evaluate(el => { el.style.visibility = 'hidden'; });
+    await page.locator('.dashboard-models').screenshot({ path: process.env.PP_TEST_SCREENSHOTS + '/pp-dashboard-models-390.png', animations: 'disabled' });
+    await page.locator('.dashboard-chart').scrollIntoViewIfNeeded();
+    await page.locator('.dashboard-chart').screenshot({ path: process.env.PP_TEST_SCREENSHOTS + '/pp-dashboard-trend-390.png', animations: 'disabled' });
+    await page.locator('.tabbar').evaluate(el => { el.style.visibility = ''; });
+  }
+  await page.setViewportSize({ width: 768, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 768);
+  assert.equal(await page.evaluate(() => document.querySelector('#view').scrollWidth), await page.evaluate(() => document.querySelector('#view').clientWidth));
+  if (process.env.PP_TEST_SCREENSHOTS) {
+    await page.locator('.tabbar').evaluate(el => { el.style.visibility = 'hidden'; });
+    await page.locator('.bottom-fade').evaluate(el => { el.style.visibility = 'hidden'; });
+    await page.locator('.dashboard-charts').screenshot({ path: process.env.PP_TEST_SCREENSHOTS + '/pp-dashboard-charts-768.png', animations: 'disabled' });
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+    await page.locator('.dashboard-charts').screenshot({ path: process.env.PP_TEST_SCREENSHOTS + '/pp-dashboard-charts-dark-768.png', animations: 'disabled' });
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+    await page.locator('.bottom-fade').evaluate(el => { el.style.visibility = ''; });
+    await page.locator('.tabbar').evaluate(el => { el.style.visibility = ''; });
+  }
+  singlePoint = true;
+  await page.getByRole('button', { name: '应用日期' }).click();
+  await page.waitForFunction(() => document.querySelectorAll('.dashboard-trend-point').length === 1);
+  assert.match(await page.locator('.dashboard-chart-detail').innerText(), /only-point[\s\S]*缓存命中率\s+0\.0%/);
+  assert.equal(await page.locator('.dashboard-trend-svg').evaluate(el => /NaN|Infinity/.test(el.outerHTML)), false);
+  singlePoint = false;
+  manyPoints = true;
+  zeroModels = true;
+  await page.getByRole('button', { name: '应用日期' }).click();
+  await page.waitForFunction(() => document.querySelectorAll('.dashboard-trend-point').length === 80);
+  assert.ok(await page.locator('.dashboard-chart-scroll').evaluate(el => el.scrollWidth > el.clientWidth));
+  assert.equal(await page.locator('.dashboard-donut-segment').count(), 0);
+  await page.locator('.dashboard-trend-point').first().dispatchEvent('click');
+  assert.match(await page.locator('.dashboard-chart-detail').innerText(), /point-0/);
+  await page.locator('.dashboard-trend-point').last().dispatchEvent('click');
+  assert.match(await page.locator('.dashboard-chart-detail').innerText(), /point-79/);
+  assert.equal(await page.evaluate(() => document.querySelector('#view').scrollWidth), await page.evaluate(() => document.querySelector('#view').clientWidth));
+  await page.getByRole('button', { name: '模型', exact: true }).click();
+  await page.locator('.plaza-group').first().waitFor();
+  assert.equal(await page.locator('.tab.active').getAttribute('data-tab'), 'plaza');
+  assert.equal(await page.locator('.tab.active').count(), 1);
+  assert.equal(await page.evaluate(() => document.querySelector('#view').scrollWidth), await page.evaluate(() => document.querySelector('#view').clientWidth));
+  if (process.env.PP_TEST_SCREENSHOTS) await page.screenshot({ path: process.env.PP_TEST_SCREENSHOTS + '/pp-plaza-mock-768.png', animations: 'disabled' });
+  await page.getByRole('button', { name: '我的', exact: true }).click();
+  await page.getByText('test@example.test').waitFor();
+  await page.getByText('用量明细').click();
+  await page.getByText('20', { exact: true }).first().waitFor();
+  await page.getByText('demo-model').first().waitFor();
+  await page.getByRole('button', { name: '令牌', exact: true }).click();
+  await page.locator('.keycard').first().waitFor();
+  emptyKeys = true;
+  await page.evaluate(() => Api.clearCache());
+  await page.evaluate(() => App.go('#/me', true));
+  await page.getByRole('button', { name: '令牌', exact: true }).click();
+  await page.getByText('还没有令牌').waitFor();
+  await page.getByRole('button', { name: '新建' }).click();
+  await page.getByRole('button', { name: '选择分组' }).getByText('请选择分组').waitFor();
+  await page.getByRole('button', { name: '选择分组' }).click();
+  await page.getByRole('option', { name: '测试分组' }).click();
+  assert.match(await page.getByRole('button', { name: '选择分组' }).innerText(), /测试分组/);
+  assert.deepEqual(errors, []);
+  console.log('UI smoke: plaza pricing and filters, dashboard, login, usage and key form passed');
+} finally {
+  await browser.close();
+  await new Promise(resolve => server.close(resolve));
+}

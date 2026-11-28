@@ -1,0 +1,98 @@
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright';
+import { createPreviewServer, listenPreview } from '../preview.mjs';
+
+const email = process.env.PP_TEST_EMAIL;
+const password = process.env.PP_TEST_PASSWORD;
+if (!email || !password) throw new Error('Set PP_TEST_EMAIL and PP_TEST_PASSWORD before running.');
+const server = createPreviewServer();
+await listenPreview(server);
+const base = `http://127.0.0.1:${server.address().port}`;
+const browser = await chromium.launch({ headless: true });
+const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+const page = await context.newPage();
+const errors = [];
+page.on('pageerror', error => errors.push(error.message));
+try {
+  await page.goto(base);
+  await page.locator('.model-row').first().waitFor({ timeout: 30000 });
+  await page.getByRole('button', { name: '登录 / 注册' }).click();
+  await page.locator('input[type=email]').fill(email);
+  await page.locator('input[type=password]').fill(password);
+  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await page.getByText('账户余额').waitFor({ timeout: 30000 });
+  await page.getByText('实时性能', { exact: true }).waitFor({ timeout: 30000 });
+  assert.equal(await page.getByText('API 令牌', { exact: true }).count(), 0);
+  await page.getByText('今日请求').waitFor({ timeout: 30000 });
+  await page.getByText('今日 Tokens').waitFor({ timeout: 30000 });
+  await page.getByText('平均响应').waitFor({ timeout: 30000 });
+  await page.getByText(/当前并发 .* 路 · 累计/).waitFor({ timeout: 30000 });
+  await page.getByText('用量趋势').waitFor({ timeout: 30000 });
+  await page.getByText('模型分布').waitFor({ timeout: 30000 });
+  await page.getByText('最近调用').waitFor({ timeout: 30000 });
+  await page.getByRole('button', { name: '模型', exact: true }).click();
+  await page.locator('.plaza-group').first().waitFor({ timeout: 30000 });
+  const pricingToggle = page.locator('.plaza-model-detail-toggle').first();
+  await pricingToggle.waitFor();
+  await pricingToggle.click();
+  await page.locator('.model-pricing').first().waitFor();
+  await page.getByText('缓存读取').first().waitFor();
+  await page.getByRole('button', { name: '渠道状态', exact: true }).click();
+  await page.locator('.channel-item').first().waitFor({ timeout: 30000 });
+  await page.getByText('平均可用率').waitFor();
+  await page.getByRole('button', { name: '刷新渠道状态' }).click();
+  await page.waitForFunction(() => !document.querySelector('[aria-label="刷新渠道状态"]').disabled);
+  assert.ok(await page.locator('.channel-availability-value').count());
+  await page.getByRole('navigation').getByRole('button', { name: '令牌', exact: true }).click();
+  await page.getByRole('button', { name: '新建' }).waitFor({ timeout: 30000 });
+  await page.waitForFunction(() => {
+    const text = document.querySelector('#view').textContent;
+    return text.includes('还没有令牌') || text.includes('Base URL') || text.includes('加载失败');
+  }, null, { timeout: 30000 });
+  assert.equal(await page.getByText('加载失败', { exact: true }).count(), 0);
+  if (await page.locator('.keycard').count()) {
+    await page.locator('.key-concurrency').first().waitFor();
+    await page.waitForFunction(() => Array.from(document.querySelectorAll('.key-usage')).every(el => !el.textContent.includes('加载中')), null, { timeout: 30000 });
+    assert.equal(await page.getByText('今日用量暂不可用').count(), 0);
+  }
+  await page.getByRole('button', { name: '我的', exact: true }).click();
+  await page.getByText('用量明细').click();
+  await page.getByText('输入 tokens').waitFor({ timeout: 30000 });
+  const sample = await page.evaluate(async () => {
+    const result = await Api.usageLogs({ page: 1, page_size: 1 });
+    if (!result.items.length) return null;
+    const date = new Date(result.items[0].created_at);
+    const pad = n => String(n).padStart(2, '0');
+    return { day: U.ymd(date), time: pad(date.getHours()) + ':' + pad(date.getMinutes()), id: result.items[0].id };
+  });
+  if (sample) {
+    const exact = await page.evaluate(async sample => {
+      const range = UsageAnalysis.parseRange(sample.day, sample.time, sample.day, sample.time);
+      const records = await UsageAnalysis.fetchRecords(range);
+      const result = UsageAnalysis.aggregate(records, 'hour');
+      return { ids: records.map(row => row.id), count: result.stats.total_requests, models: result.models.length };
+    }, sample);
+    assert.ok(exact.ids.includes(sample.id));
+    assert.equal(exact.count, exact.ids.length);
+    assert.ok(exact.models > 0);
+  }
+  await page.goto(base + '/#/purchase');
+  await page.getByText('选择商品').waitFor({ timeout: 30000 });
+  await page.getByText('订单加载失败').or(page.getByRole('tab', { name: '订单' })).first().waitFor({ timeout: 30000 });
+  assert.equal(await page.getByText('订单加载失败').count(), 0);
+  const daycard = await page.evaluate(() => Api.daycardInfo());
+  assert.ok(daycard.plan && daycard.user && Number.isFinite(Number(daycard.user.balance)));
+  const product = page.locator('label.payment-choice').filter({ has: page.locator('input[name="payment-product"]') })
+    .filter({ hasText: daycard.plan.name }).first();
+  await product.click();
+  await page.getByText('余额支付', { exact: true }).waitFor({ timeout: 30000 });
+  assert.match(await page.locator('.payment-balance-note').innerText(), /账户余额 ¥[\d.]+ · 订阅价格 ¥[\d.]+/);
+  await page.goto(base + '/#/announcements');
+  await page.locator('#view .list-item').first().waitFor({ timeout: 30000 });
+  assert.deepEqual(errors, []);
+  console.log('Live account: dashboard, precise usage, checkout configuration, daycard balance, orders and announcements passed (read-only)');
+} finally {
+  await context.close();
+  await browser.close();
+  await new Promise(resolve => server.close(resolve));
+}

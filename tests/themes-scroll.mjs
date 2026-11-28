@@ -1,0 +1,165 @@
+import assert from 'node:assert/strict';
+import { mkdir } from 'node:fs/promises';
+import { chromium, webkit } from 'playwright';
+import { createPreviewServer, listenPreview } from '../preview.mjs';
+
+const server = createPreviewServer();
+await listenPreview(server);
+const base = `http://127.0.0.1:${server.address().port}`;
+const ok = data => ({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 0, data }) });
+const screenshotDir = process.env.PP_TEST_SCREENSHOTS;
+if (screenshotDir) await mkdir(screenshotDir, { recursive: true });
+
+async function run(engine, name) {
+  const browser = await engine.launch({ headless: true });
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  await context.addInitScript(() => {
+    localStorage.setItem('pp_api_token', JSON.stringify('fake-access'));
+    localStorage.setItem('pp_api_user', JSON.stringify({ id: 1, email: 'test@example.test' }));
+  });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.route('**/__proxy/**', route => {
+    const p = new URL(route.request().url()).pathname.replace(/^\/__proxy\/(site|model)/, '');
+    if (p === '/api/v1/settings/public') return route.fulfill(ok({ site_name: 'Pp API' }));
+    if (p === '/api/v1/model-plaza') return route.fulfill(ok({ groups: [] }));
+    if (p === '/api/v1/auth/me') return route.fulfill(ok({ id: 1, email: 'test@example.test', balance: 3 }));
+    if (p === '/api/v1/keys') return route.fulfill(ok({ items: [] }));
+    if (p === '/api/v1/usage/dashboard/stats') return route.fulfill(ok({ total_api_keys: 1, active_api_keys: 1, today_requests: 1, total_requests: 2, total_tokens: 100 }));
+    if (p === '/api/v1/user/platform-quotas') return route.fulfill(ok({ platform_quotas: [] }));
+    if (p === '/api/v1/usage/dashboard/trend') return route.fulfill(ok({ trend: [] }));
+    if (p === '/api/v1/usage/dashboard/models') return route.fulfill(ok({ models: [] }));
+    if (p === '/api/v1/usage') return route.fulfill(ok({ items: [], total: 0 }));
+    if (p === '/api/v1/announcements') return route.fulfill(ok([]));
+    return route.fulfill(ok([]));
+  });
+  try {
+    await page.goto(base + '/#/home', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.getByText('快捷操作').waitFor();
+    await page.waitForFunction(() => {
+      const node = document.querySelector('.tabbar');
+      return node && (node.classList.contains('glass-refract') || node.classList.contains('glass-fallback'));
+    });
+    const glass = await page.evaluate(() => {
+      const tabbar = getComputedStyle(document.querySelector('.tabbar'));
+      const active = document.querySelector('.tab.active');
+      const tabStyle = getComputedStyle(active);
+      return {
+        blur: (() => {
+          const layer = document.querySelector('.tabbar-glass');
+          const style = getComputedStyle(layer);
+          const classList = document.querySelector('.tabbar').classList;
+          return {
+            value: style.backdropFilter || style.webkitBackdropFilter,
+            refract: classList.contains('glass-refract'),
+            fallback: classList.contains('glass-fallback')
+          };
+        })(),
+        background: tabbar.backgroundImage,
+        activeFilter: getComputedStyle(active.querySelector('svg')).filter,
+        indicator: (() => {
+          const node = document.querySelector('.tab-indicator');
+          const style = getComputedStyle(node);
+          const rect = node.getBoundingClientRect();
+          const activeRect = active.getBoundingClientRect();
+          return { background: style.backgroundImage, radius: style.borderRadius, dx: Math.abs((rect.left + rect.width / 2) - (activeRect.left + activeRect.width / 2)), width: rect.width };
+        })(),
+        fade: getComputedStyle(document.querySelector('.bottom-fade')).backgroundImage
+      };
+    });
+    if (glass.blur.refract) {
+      assert.match(glass.blur.value, /url\(/);
+    } else {
+      assert.equal(glass.blur.fallback, true);
+      assert.match(glass.blur.value, /blur\(46px\)/);
+      assert.match(glass.blur.value, /saturate\(2\)/);
+    }
+    assert.equal(glass.activeFilter, 'none');
+    assert.ok(glass.indicator.dx < 0.5, JSON.stringify(glass.indicator));
+    assert.ok(glass.indicator.width >= 46 && glass.indicator.width <= 54);
+    assert.doesNotMatch(glass.fade, /radial-gradient/);
+    for (const inset of [0, 24, 34]) {
+      await page.evaluate(value => window.__applyInsets(0, value), inset);
+      const bounds = await page.locator('.tabbar').boundingBox();
+      assert.ok(bounds.y + bounds.height <= 844 - inset - 9, JSON.stringify({ inset, bounds }));
+    }
+    await page.evaluate(() => App.go('#/chat'));
+    await page.getByRole('button', { name: '对话设置' }).waitFor();
+    if (screenshotDir) {
+      await page.locator('.chat-toolbar').screenshot({ path: `${screenshotDir}/${name}-toolbar-light.png`, animations: 'disabled' });
+      await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+      await page.waitForTimeout(120);
+      await page.locator('.chat-toolbar').screenshot({ path: `${screenshotDir}/${name}-toolbar-dark.png`, animations: 'disabled' });
+      await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'ocean'));
+    }
+    const iconCenters = await page.locator('.tool-btn').evaluateAll(buttons => buttons.map(button => {
+      const box = button.getBoundingClientRect();
+      const icon = button.querySelector('svg').getBoundingClientRect();
+      return {
+        dx: Math.abs((box.left + box.width / 2) - (icon.left + icon.width / 2)),
+        dy: Math.abs((box.top + box.height / 2) - (icon.top + icon.height / 2)),
+        padding: getComputedStyle(button).padding,
+        appearance: getComputedStyle(button).webkitAppearance
+      };
+    }));
+    assert.equal(iconCenters.length, 2);
+    assert.ok(iconCenters.every(item => item.dx < 0.1 && item.dy < 0.1), JSON.stringify(iconCenters));
+    assert.ok(iconCenters.every(item => /^0px( 0px){0,3}$/.test(item.padding) && item.appearance === 'none'));
+    await page.getByRole('button', { name: '首页', exact: true }).click();
+    await page.getByText('快捷操作').waitFor();
+    await page.getByRole('button', { name: '切换到暗色' }).click();
+    assert.equal(await page.evaluate(() => document.documentElement.getAttribute('data-theme')), 'dark');
+    await page.getByRole('button', { name: '我的', exact: true }).click();
+    await page.getByText('主题外观', { exact: true }).click();
+    await page.getByRole('heading', { name: '主题外观' }).waitFor();
+    assert.equal(await page.locator('.theme-choice').count(), 11);
+    await page.getByRole('button', { name: /薄荷/ }).click();
+    assert.equal(await page.evaluate(() => document.documentElement.getAttribute('data-theme')), 'mint');
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pp_api_theme'))), 'mint');
+    await page.getByRole('button', { name: /夜幕/ }).click();
+    assert.equal(await page.evaluate(() => document.documentElement.getAttribute('data-theme')), 'violet-dark');
+    const darkBg = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--bg').trim());
+    assert.equal(darkBg, '#0e1113');
+    await page.getByRole('button', { name: '完成' }).click();
+    await page.getByRole('button', { name: '首页', exact: true }).click();
+    await page.getByText('快捷操作').waitFor();
+    await page.reload();
+    await page.getByText('快捷操作').waitFor();
+    assert.equal(await page.evaluate(() => document.documentElement.getAttribute('data-theme')), 'violet-dark');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+
+    const metrics = await page.evaluate(() => {
+      const main = document.querySelector('main');
+      const pageNode = document.querySelector('.page');
+      main.scrollTop = 99999;
+      return {
+        max: main.scrollHeight - main.clientHeight,
+        top: main.scrollTop,
+        overscroll: getComputedStyle(main).overscrollBehaviorY || getComputedStyle(main).webkitOverscrollBehaviorY,
+        pageBottom: pageNode.getBoundingClientRect().bottom,
+        viewportBottom: main.getBoundingClientRect().bottom,
+        nestedScroll: Array.from(pageNode.querySelectorAll('*')).filter(node => {
+          const style = getComputedStyle(node);
+          return /(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 2;
+        }).length
+      };
+    });
+    assert.equal(metrics.top, metrics.max);
+    if (metrics.overscroll !== undefined) assert.equal(metrics.overscroll, 'contain');
+    assert.ok(metrics.pageBottom <= metrics.viewportBottom + 2);
+    assert.equal(metrics.nestedScroll, 0);
+    assert.deepEqual(errors, []);
+    console.log(`Themes and scroll (${name}): palette persistence, dark contrast and bottom containment passed`);
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+}
+
+try {
+  await run(chromium, 'chromium');
+  await run(webkit, 'webkit');
+} finally {
+  await new Promise(resolve => server.close(resolve));
+}
