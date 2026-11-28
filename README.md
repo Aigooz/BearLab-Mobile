@@ -1,6 +1,6 @@
 # BearLab AI Mobile
 
-BearLab AI 的第三方 Android 和 iOS 客户端。应用使用原生容器和共享移动界面，不代表 BearLab AI 官方。当前版本为 `1.1.1`。
+BearLab AI 的第三方 Android 和 iOS 客户端。应用使用原生容器和共享移动界面，不代表 BearLab AI 官方。当前版本为 `1.1.2`。
 
 ## 功能
 
@@ -26,7 +26,7 @@ BearLab AI 的第三方 Android 和 iOS 客户端。应用使用原生容器和�
 - Android：`BearLab-AI-release.apk`。调试构建为 `BearLab-AI-debug.apk`。
 - iOS：`BearLab-AI-iOS-unsigned.ipa`。该文件不能直接安装，需使用自己的 Apple ID 等方式签名；设备要求 iOS 15 或更新版本。详见 [iOS 安装与构建说明](ios/README.md)。
 
-安装包更新时需要自行核对下载来源、包名和签名。Android 保留包名 `com.ppapi.mobile`，iOS 保留 Bundle ID `com.ppapi.mobile`，以支持覆盖安装；更换签名后通常需要卸载重装。
+安装包更新时需要自行核对下载来源、包名和签名。Android 使用独立包名 `ai.bearlab.mobile`，iOS 使用独立 Bundle ID `ai.bearlab.mobile`，因此可以与 PP 客户端同时安装；更换签名后通常需要卸载重装。
 
 ## 项目结构
 
@@ -59,7 +59,7 @@ Android 需要 JDK 17 或 21、Android SDK 35 和 Gradle 8.9。在配置 SDK 后
 
 iOS 需要 macOS、Xcode 16 或更新版本；打开 `ios/PpApiMobile.xcodeproj`，或手动运行 `Build iOS package` 工作流。工作流生成未签名 IPA，并构建和启动模拟器。签名分发需要相应 Apple 开发者配置。
 
-发布时递增 Android `versionCode`、`versionName` 与 iOS `CURRENT_PROJECT_VERSION`、`MARKETING_VERSION`，运行测试并检查签名。Android 工作流可由 `v*` 标签自动触发，也可在 Actions 中手动输入标签；它会运行测试、使用仓库 Secrets 签名、校验 APK 并创建含 SHA-256 的 GitHub Release。发布后可运行 `node tests/verify-release.mjs v1.1.1` 独立验证公网资产。若自行创建 Release，请同步资产名 `BearLab-AI-release.apk` 与 `BearLab-AI-iOS-unsigned.ipa`，并在分发前计算和公布 SHA-256。
+发布时递增 Android `versionCode`、`versionName` 与 iOS `CURRENT_PROJECT_VERSION`、`MARKETING_VERSION`，运行测试并检查签名。Android 工作流可由 `v*` 标签自动触发，也可在 Actions 中手动输入标签；它会运行测试、使用仓库 Secrets 签名、校验 APK 并创建含 SHA-256 的 GitHub Release。发布后可运行 `node tests/verify-release.mjs v1.1.2` 独立验证公网资产。若自行创建 Release，请同步资产名 `BearLab-AI-release.apk` 与 `BearLab-AI-iOS-unsigned.ipa`，并在分发前计算和公布 SHA-256。
 
 ## 数据与第三方组件
 

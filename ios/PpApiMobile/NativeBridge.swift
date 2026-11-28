@@ -17,7 +17,7 @@ private final class NativeRequest {
 }
 
 final class NativeBridge: NSObject, WKScriptMessageHandler, URLSessionDataDelegate, URLSessionTaskDelegate {
-    private static let secureService = "com.ppapi.mobile.auth"
+    private static let secureService = "ai.bearlab.mobile.auth"
     private static let secureAccount = "auth-vault-v1"
     weak var webView: WKWebView?
     weak var viewController: MobileViewController?
@@ -30,7 +30,7 @@ final class NativeBridge: NSObject, WKScriptMessageHandler, URLSessionDataDelega
 
     override init() {
         super.init()
-        queue.name = "com.ppapi.mobile.network"
+        queue.name = "ai.bearlab.mobile.network"
         queue.maxConcurrentOperationCount = 1
         let configuration = URLSessionConfiguration.default
         configuration.httpCookieStorage = HTTPCookieStorage.shared

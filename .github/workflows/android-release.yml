@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag, for example v1.1.1
+        description: Release tag, for example v1.1.2
         required: true
         type: string
 
@@ -100,7 +100,7 @@ jobs:
           test -f app/build/outputs/apk/release/BearLab-AI-release.apk
           build_tools="$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
           "$build_tools/apksigner" verify --verbose --print-certs app/build/outputs/apk/release/BearLab-AI-release.apk
-          "$build_tools/aapt" dump badging app/build/outputs/apk/release/BearLab-AI-release.apk | grep -F "package: name='com.ppapi.mobile' versionCode='$VERSION_CODE' versionName='$VERSION_NAME'"
+          "$build_tools/aapt" dump badging app/build/outputs/apk/release/BearLab-AI-release.apk | grep -F "package: name='ai.bearlab.mobile' versionCode='$VERSION_CODE' versionName='$VERSION_NAME'"
           sha256sum app/build/outputs/apk/release/BearLab-AI-release.apk | tee BearLab-AI-release.apk.sha256
       - name: Publish GitHub Release
         env:
@@ -111,6 +111,7 @@ jobs:
           printf 'BearLab AI Mobile %s\n' "$RELEASE_TAG" > "$notes"
           cat >> "$notes" <<EOF
 
+          - Independent AI BearLab package identity for side-by-side PP installation
           - BearLab platform usage, model plaza and channel availability
           - PP-style account dashboard with live usage, quality and concurrency
           - Bear announcements, model preview and complete usage analytics

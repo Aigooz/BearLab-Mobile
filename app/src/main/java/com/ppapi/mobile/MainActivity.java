@@ -72,7 +72,7 @@ public class MainActivity extends Activity {
 
     private static final String START_URL = "file:///android_asset/www/index.html";
     private static final String ORIGIN = "https://bearlab.ai";
-    static final String ACTION_UPDATE = "com.ppapi.mobile.UPDATE";
+    static final String ACTION_UPDATE = "ai.bearlab.mobile.UPDATE";
     private static final int NOTIFICATION_PERMISSION = 8101;
     private static final int INSTALL_PERMISSION = 8102;
     private static final int PAYMENT_REQUEST = 4107;
@@ -541,8 +541,8 @@ public class MainActivity extends Activity {
     /** JS <-> native bridge. Every method runs on the WebView's JS thread. */
     public class Bridge {
 
-        private static final String AUTH_KEY_ALIAS = "ppapi.auth.v1";
-        private static final String AUTH_PREFERENCES = "ppapi_secure";
+        private static final String AUTH_KEY_ALIAS = "bearlab.auth.v1";
+        private static final String AUTH_PREFERENCES = "bearlab_secure";
         private static final String AUTH_VALUE = "auth_vault";
 
         private SecretKey authKey() throws Exception {
@@ -839,7 +839,7 @@ public class MainActivity extends Activity {
             if (manager == null) return "disabled";
             if (Build.VERSION.SDK_INT >= 24 && !manager.areNotificationsEnabled()) return "disabled";
             if (Build.VERSION.SDK_INT >= 26) {
-                NotificationChannel channel = manager.getNotificationChannel("ppapi_updates");
+                NotificationChannel channel = manager.getNotificationChannel("bearlab_updates");
                 if (channel != null && channel.getImportance() == NotificationManager.IMPORTANCE_NONE) return "disabled";
             }
             return "enabled";

@@ -16,13 +16,13 @@ android {
     }
 
     defaultConfig {
-        applicationId 'com.ppapi.mobile'
+        applicationId 'ai.bearlab.mobile'
         minSdk 23
         targetSdk 34
-        // Encoded semantic version keeps 1.1.1 installable over the previous
-        // 1.38.0 test build while remaining higher than every 1.x release.
-        versionCode 11000101
-        versionName '1.1.1'
+        // Encoded semantic version keeps BearLab updates ordered under its
+        // independent package ID, so PP and BearLab can be installed together.
+        versionCode 11000102
+        versionName '1.1.2'
     }
 
     signingConfigs {

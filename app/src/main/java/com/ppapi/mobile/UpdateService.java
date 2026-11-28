@@ -24,11 +24,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * next to the in-app one.
  */
 public final class UpdateService extends Service {
-    static final String CHANNEL_ID = "ppapi_update_download";
+    static final String CHANNEL_ID = "bearlab_update_download";
     private static final int NOTIFICATION_ID = 8022;
 
-    static final String ACTION_START = "com.ppapi.mobile.UPDATE_START";
-    static final String ACTION_CANCEL = "com.ppapi.mobile.UPDATE_CANCEL";
+    static final String ACTION_START = "ai.bearlab.mobile.UPDATE_START";
+    static final String ACTION_CANCEL = "ai.bearlab.mobile.UPDATE_CANCEL";
     static final String EXTRA_RELEASE = "release";
 
     private static final AtomicBoolean CANCEL = new AtomicBoolean(false);
@@ -64,7 +64,7 @@ public final class UpdateService extends Service {
         dlState = "running"; dlMessage = ""; dlDone = 0; dlTotal = 0; dlSpeed = 0; dlAttempt = 1;
         try { dlVersion = new JSONObject(raw).optString("version", ""); } catch (Exception ignored) { dlVersion = ""; }
         startForeground(NOTIFICATION_ID, notification(0, 0, "准备下载", 0));
-        Thread thread = new Thread(new Task(raw), "ppapi-update-download");
+        Thread thread = new Thread(new Task(raw), "bearlab-update-download");
         worker = thread;
         thread.start();
         return START_NOT_STICKY;

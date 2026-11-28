@@ -19,7 +19,7 @@ import org.json.JSONObject;
 
 public final class UpdateJobService extends JobService {
     private static final int JOB_ID = 8021;
-    private static final String CHANNEL_ID = "ppapi_updates";
+    private static final String CHANNEL_ID = "bearlab_updates";
 
     static void schedule(Context context) {
         JobScheduler scheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
@@ -50,7 +50,7 @@ public final class UpdateJobService extends JobService {
                     jobFinished(params, false);
                 }
             }
-        }, "ppapi-update-check").start();
+        }, "bearlab-update-check").start();
         return true;
     }
 

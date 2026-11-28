@@ -562,7 +562,7 @@
       var device = JSON.parse(global.Native && global.Native.device ? global.Native.device() : '{}');
       if (device && device.app) return String(device.app);
     } catch (e) {}
-    return String(global.__ppVersion || '1.1.1');
+    return String(global.__ppVersion || '1.1.2');
   }
 
   function overlayItem() {

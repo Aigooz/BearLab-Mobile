@@ -82,9 +82,9 @@ jobs:
           xcrun simctl boot "$udid"
           xcrun simctl bootstatus "$udid" -b
           xcrun simctl install "$udid" "$RUNNER_TEMP/pp-ios-simulator/Build/Products/Release-iphonesimulator/PpApiMobile.app"
-          xcrun simctl launch "$udid" com.ppapi.mobile
+          xcrun simctl launch "$udid" ai.bearlab.mobile
           sleep 10
-          xcrun simctl spawn "$udid" launchctl list | grep -F com.ppapi.mobile
+          xcrun simctl spawn "$udid" launchctl list | grep -F ai.bearlab.mobile
           xcrun simctl io "$udid" screenshot "$GITHUB_WORKSPACE/BearLab-AI-iOS-simulator.png"
       - uses: actions/upload-artifact@v4
         with:

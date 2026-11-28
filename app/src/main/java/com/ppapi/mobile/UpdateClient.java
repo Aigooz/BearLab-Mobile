@@ -24,7 +24,7 @@ final class UpdateClient {
     static final String ASSET_NAME = UpdateRules.ASSET_NAME;
     /** In-flight bytes live here so a dropped connection resumes instead of restarting. */
     static final String PART_SUFFIX = ".part";
-    static final String PREFERENCES = "ppapi_updates";
+    static final String PREFERENCES = "bearlab_updates";
     static final String RELEASE_KEY = "release";
     static final String DOWNLOAD_RELEASE_KEY = "download_release";
     static final String DOWNLOAD_KEY = "download_id";
@@ -32,7 +32,7 @@ final class UpdateClient {
 
     /** Shared by the activity and the download service; Activity#getPreferences is not visible there. */
     static android.content.SharedPreferences prefs(android.content.Context context) {
-        return context.getSharedPreferences("ppapi_updates_state", android.content.Context.MODE_PRIVATE);
+        return context.getSharedPreferences("bearlab_updates_state", android.content.Context.MODE_PRIVATE);
     }
 
     private UpdateClient() {}
